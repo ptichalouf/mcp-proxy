@@ -177,6 +177,17 @@ export const en = {
     deleteTitle: 'Uninstall Server',
     deleteMessage: 'Are you sure you want to uninstall "{name}"? Its configuration will be removed from config.json.',
   },
+  auth: {
+    title: 'Authentication required',
+    message:
+      'This proxy is protected by mcpProxy.options.authTokens. Enter one of the tokens to load the dashboard.',
+    tokenLabel: 'Access token',
+    tokenPlaceholder: 'Paste your access token',
+    submit: 'Unlock dashboard',
+    signOut: 'Sign out',
+    invalid: 'That token was rejected. Check it against mcpProxy.options.authTokens.',
+    stored: 'The token is kept in this browser only, under the key {key}.',
+  },
   errors: {
     generic: 'An unexpected error occurred. Please try again.',
     nameRequired: 'Server identifier is required.',

@@ -6,7 +6,9 @@ import type {
   ProxyHealthSummary,
   ReloadResult,
 } from './types';
-import { api } from './lib/api';
+import { api, ApiError } from './lib/api';
+import { subscribeToToken } from './lib/auth';
+import { AuthGate } from './components/AuthGate';
 import { Header } from './components/Header';
 import { StatusBanner } from './components/StatusBanner';
 import { SearchFilterBar } from './components/SearchFilterBar';
@@ -24,6 +26,9 @@ export function App() {
 
   // Navigation tab
   const [activeTab, setActiveTab] = useState<'marketplace' | 'installed'>('marketplace');
+
+  // Auth
+  const [isUnauthorized, setIsUnauthorized] = useState(false);
 
   // Main Data States
   const [catalog, setCatalog] = useState<CatalogItem[]>([]);
@@ -86,7 +91,28 @@ export function App() {
     }
   }, []);
 
+  // Health is the one call the dashboard cannot paper over: it is what proves
+  // the token works, so a 401 here is what opens the gate.
+  const checkAuth = useCallback(async () => {
+    try {
+      await api.getProxyHealth();
+      setIsUnauthorized(false);
+    } catch (err) {
+      setIsUnauthorized(err instanceof ApiError && err.status === 401);
+    }
+  }, []);
+
   useEffect(() => {
+    checkAuth();
+    // Signing in or out re-runs the check, so the gate closes again if the
+    // token is cleared or replaced with a bad one.
+    return subscribeToToken(() => {
+      checkAuth();
+    });
+  }, [checkAuth]);
+
+  useEffect(() => {
+    if (isUnauthorized) return;
     fetchData(true);
     // Polling every 12 seconds
     const interval = setInterval(() => {
@@ -94,7 +120,7 @@ export function App() {
       api.getInstalledServers().then(setInstalledServers).catch(() => {});
     }, 12000);
     return () => clearInterval(interval);
-  }, [fetchData]);
+  }, [fetchData, isUnauthorized]);
 
   // Actions
   const handleReloadProxy = async () => {
@@ -183,6 +209,10 @@ export function App() {
       return true;
     });
   }, [catalog, selectedCategory, selectedTransport, searchQuery]);
+
+  if (isUnauthorized) {
+    return <AuthGate onAuthenticated={() => checkAuth()} />;
+  }
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500/30 selection:text-cyan-200">

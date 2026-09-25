@@ -10,6 +10,12 @@
 -insecure              skip TLS verification for remote config
 -authorize string      run a one-time interactive OAuth authorization for the
                         named mcpServers entry, then exit
+-auth-status           list every configured server with its transport and
+                        authentication state, then exit
+-doctor                like -auth-status, but also connects to each server to
+                        confirm its credentials are accepted right now
+-web                   serve the management dashboard and its API, which can
+                        add, edit, and remove servers in the config file
 -check-config          load and validate the config, then exit
 -log-level value       log level: debug, info, warn, or error (default info)
 -version               print version and exit
@@ -125,3 +131,61 @@ running when you authorized, restart it now - the new token won't be
 picked up otherwise. After that, tokens refresh automatically as they
 expire with no further restarts needed. Re-run `-authorize` only if the
 server reports the token is no longer valid (e.g. access was revoked).
+
+## Management dashboard
+
+`-web` serves a dashboard at `/` for adding, editing, enabling, renaming and
+removing downstream servers without restarting the proxy:
+
+```bash
+mcp-proxy -config config.json -web
+```
+
+It is **off by default**, and worth being deliberate about: an endpoint that can
+edit the config file can start processes as the user the proxy runs as. When
+`mcpProxy.options.authTokens` is set, the dashboard's API is gated by those same
+tokens. The page itself is served without one — it has to be, so it can ask —
+and it then prompts for a token, verifies it against a real endpoint, and stores
+it in this browser's `localStorage`. Until a valid token is supplied the
+dashboard shows nothing but the prompt, and a sign-out button in the header
+forgets it. Without `authTokens` the proxy starts anyway (a localhost-only setup
+is legitimate) and logs a warning. `-web` also refuses to start when the config
+is a remote `http(s)` URL, since there is nothing to write back to.
+
+A change is applied by reloading the config and starting or stopping only the
+servers that actually changed, so connections belonging to untouched servers
+are not disturbed. Every write is validated before it lands (a config that
+would not load is rejected and the file is left as it was), the previous file is
+backed up to `<config dir>/.backups/` keeping the 10 most recent, and the write
+is atomic.
+
+Environment values are handled carefully. A `${VAR}` placeholder is preserved in
+the file rather than replaced by its expanded value, and a secret written
+literally is sent back to the browser masked, then restored on save — so the
+dashboard never round-trips a real credential into `config.json`.
+
+The `mcp-proxy -web` process serves the compiled UI from the binary itself;
+there is no separate frontend to deploy.
+
+### Dashboard API
+
+All of these live under `/api/mcp/` and require the auth token when one is
+configured. They answer JSON, and an unknown `/api/` path is a JSON 404 rather
+than the dashboard's HTML page.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/api/mcp/installed` | Configured servers, with secrets masked |
+| `POST` | `/api/mcp/install` | Add a server (from scratch or a catalog entry) |
+| `PATCH` | `/api/mcp/servers/{id}` | Rename, enable/disable, edit env, args, command or URL |
+| `DELETE` | `/api/mcp/servers/{id}` | Remove a server |
+| `GET` | `/api/mcp/servers/{id}/logs` | Recent stdout/stderr/system lines for a server |
+| `GET` | `/api/mcp/catalog` | The built-in catalog, filtered by `?q=` and `?category=` |
+| `GET` | `/api/mcp/proxy/health` | Health, uptime and the config's state |
+| `POST` | `/api/mcp/proxy/reload` | Re-read the config from disk and apply the diff |
+
+The catalog is compiled in rather than fetched from a third-party index at
+runtime, so the dashboard works offline and adds no supply-chain dependency.
+Entries only describe how to launch a server (`npx`, `uvx`, `docker`, …);
+installing is exactly what the command does, as if you had written the config
+by hand.

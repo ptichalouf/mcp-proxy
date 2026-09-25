@@ -1,6 +1,7 @@
 import { useI18n } from '../i18n';
 import { LanguageSwitcher } from './LanguageSwitcher';
-import { Server, Store, Plus, RefreshCw } from 'lucide-react';
+import { getToken, setToken } from '../lib/auth';
+import { Server, Store, Plus, RefreshCw, LogOut } from 'lucide-react';
 
 interface HeaderProps {
   activeTab: 'marketplace' | 'installed';
@@ -96,6 +97,18 @@ export function Header({
             </button>
 
             <LanguageSwitcher />
+
+            {/* Only useful when the operator set authTokens; without one there
+                is nothing to sign out of. */}
+            {getToken() && (
+              <button
+                onClick={() => setToken(null)}
+                title={t('auth.signOut')}
+                className="p-2 rounded-lg text-slate-400 hover:text-slate-200 hover:bg-slate-800/80 border border-slate-800 transition-all cursor-pointer"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            )}
 
             <a
               href="https://github.com/tbxark/mcp-proxy"

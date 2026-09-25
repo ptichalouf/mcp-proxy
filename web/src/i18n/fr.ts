@@ -179,6 +179,17 @@ export const fr: Dictionary = {
     deleteTitle: 'Désinstaller le serveur',
     deleteMessage: 'Êtes-vous sûr de vouloir désinstaller "{name}" ? Sa configuration sera supprimée de config.json.',
   },
+  auth: {
+    title: 'Authentification requise',
+    message:
+      "Ce proxy est protégé par mcpProxy.options.authTokens. Saisissez l'un des jetons pour charger le tableau de bord.",
+    tokenLabel: "Jeton d'accès",
+    tokenPlaceholder: 'Collez votre jeton d’accès',
+    submit: 'Déverrouiller',
+    signOut: 'Se déconnecter',
+    invalid: 'Ce jeton a été refusé. Vérifiez-le dans mcpProxy.options.authTokens.',
+    stored: 'Le jeton est conservé uniquement dans ce navigateur, sous la clé {key}.',
+  },
   errors: {
     generic: 'Une erreur inattendue est survenue. Veuillez réessayer.',
     nameRequired: 'L\'identifiant du serveur est requis.',

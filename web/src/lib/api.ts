@@ -5,6 +5,7 @@ import type {
   ReloadResult,
   ServerLogEntry,
 } from '../types';
+import { getToken } from './auth';
 
 export class ApiError extends Error {
   code: string;
@@ -16,6 +17,18 @@ export class ApiError extends Error {
     this.code = code;
     this.status = status;
   }
+}
+
+// Every request goes through here so that the auth token cannot be forgotten
+// on a new endpoint: the header is attached in one place, and only to
+// same-origin /api paths.
+async function request(path: string, init: RequestInit = {}): Promise<Response> {
+  const headers = new Headers(init.headers);
+  const token = getToken();
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+  return fetch(path, { ...init, headers });
 }
 
 async function handleResponse<T>(res: Response): Promise<T> {
@@ -41,24 +54,24 @@ export const api = {
     if (query) params.set('q', query);
     if (category && category !== 'all') params.set('category', category);
     const qs = params.toString() ? `?${params.toString()}` : '';
-    const res = await fetch(`/api/mcp/catalog${qs}`);
+    const res = await request(`/api/mcp/catalog${qs}`);
     const data = await handleResponse<{ items: CatalogItem[] }>(res);
     return data.items || [];
   },
 
   async getInstalledServers(): Promise<InstalledServer[]> {
-    const res = await fetch('/api/mcp/installed');
+    const res = await request('/api/mcp/installed');
     const data = await handleResponse<{ servers: InstalledServer[] }>(res);
     return data.servers || [];
   },
 
   async getProxyHealth(): Promise<ProxyHealthSummary> {
-    const res = await fetch('/api/mcp/proxy/health');
+    const res = await request('/api/mcp/proxy/health');
     return handleResponse<ProxyHealthSummary>(res);
   },
 
   async reloadProxy(): Promise<ReloadResult> {
-    const res = await fetch('/api/mcp/proxy/reload', {
+    const res = await request('/api/mcp/proxy/reload', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
     });
@@ -74,7 +87,7 @@ export const api = {
     url?: string;
     env?: Record<string, string>;
   }): Promise<{ server: InstalledServer; reload: ReloadResult }> {
-    const res = await fetch('/api/mcp/install', {
+    const res = await request('/api/mcp/install', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
@@ -93,7 +106,7 @@ export const api = {
       url?: string;
     },
   ): Promise<{ server: InstalledServer; reload: ReloadResult }> {
-    const res = await fetch(`/api/mcp/servers/${encodeURIComponent(id)}`, {
+    const res = await request(`/api/mcp/servers/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
@@ -102,14 +115,14 @@ export const api = {
   },
 
   async uninstallServer(id: string): Promise<{ success: boolean; reload: ReloadResult }> {
-    const res = await fetch(`/api/mcp/servers/${encodeURIComponent(id)}`, {
+    const res = await request(`/api/mcp/servers/${encodeURIComponent(id)}`, {
       method: 'DELETE',
     });
     return handleResponse<{ success: boolean; reload: ReloadResult }>(res);
   },
 
   async getServerLogs(id: string): Promise<ServerLogEntry[]> {
-    const res = await fetch(`/api/mcp/servers/${encodeURIComponent(id)}/logs`);
+    const res = await request(`/api/mcp/servers/${encodeURIComponent(id)}/logs`);
     const data = await handleResponse<{ logs: ServerLogEntry[] }>(res);
     return data.logs || [];
   },

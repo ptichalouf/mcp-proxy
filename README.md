@@ -8,6 +8,7 @@ An MCP proxy that aggregates multiple MCP servers behind a single HTTP entrypoin
 - SSE and streamable HTTP: serve via Server‑Sent Events or streamable HTTP.
 - Flexible config: supports `stdio`, `sse`, and `streamable-http` client types.
 - OAuth client support: authorize once against downstream servers that require interactive OAuth (e.g. Notion), then let the proxy hold and refresh the token for every caller.
+- Optional management dashboard (`-web`): add, edit, enable, rename and remove servers from a browser, without restarting the proxy or interrupting the connections of servers you did not touch.
 
 ## Documentation
 
@@ -54,6 +55,9 @@ An online Claude config converter is available at: https://tbxark.github.io/mcp-
 ## Usage
 
 Command‑line flags, endpoints, and auth examples are documented in [docs/usage.md](docs/USAGE.md).
+
+The optional management dashboard (`-web`) is documented there too, under
+[management dashboard](docs/USAGE.md#management-dashboard).
 
 ## Thanks
 
