@@ -10,6 +10,13 @@ GO_BUILD=CGO_ENABLED=0 go build $(LD_FLAGS)
 build:
 	$(GO_BUILD) -o $(BUILD_DIR)/ ./...
 
+# Rebuild the embedded management UI. web/dist is committed, so this is only
+# needed after changing something under web/src - `make build` never runs it,
+# and building the binary never requires Node.
+.PHONY: web
+web:
+	cd web && npm ci && npm run build
+
 .PHONY: buildLinuxX86
 buildLinuxX86:
 	GOOS=linux GOARCH=amd64 $(GO_BUILD) -o $(BUILD_DIR)/ ./...

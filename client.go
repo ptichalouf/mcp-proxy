@@ -483,7 +483,12 @@ func drainStderr(name string, mcpClient *client.Client) {
 		// one into a scan error and stop the drain.
 		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
-			slog.Debug("Downstream stderr", "client", name, "line", scanner.Text())
+			line := scanner.Text()
+			slog.Debug("Downstream stderr", "client", name, "line", line)
+			// Also kept in the in-memory ring the management API reads, so the
+			// UI can show why a server is unhappy without the proxy running at
+			// debug level. A no-op when that API is disabled.
+			recordServerLog(name, logStreamStderr, "error", line)
 		}
 	}()
 }

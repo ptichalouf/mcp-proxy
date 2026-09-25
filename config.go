@@ -512,6 +512,13 @@ func jsonPresent(raw json.RawMessage) bool {
 	return len(raw) > 0 && string(raw) != "null"
 }
 
+// remoteConfigPath reports whether the config is fetched over http(s) rather
+// than read from a file. The management API cannot edit such a config - there
+// is nothing to write back to - so it refuses to start in that case.
+func remoteConfigPath(path string) bool {
+	return http.IsRemoteURL(path)
+}
+
 func newConfProvider(path string, insecure, expandEnv bool, httpHeaders string, httpTimeout int) (provider.Provider, error) {
 	if http.IsRemoteURL(path) {
 		var opts []http.Option

@@ -150,3 +150,7 @@ config_prod.json
 /.zcode/skills
 skills-lock.json
 /code_review
+
+# Web UI build inputs. web/dist IS committed (see web/README.md): it is
+# embedded into the binary, so the Go build must not require Node.
+/web/node_modules

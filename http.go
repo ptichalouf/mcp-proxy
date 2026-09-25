@@ -11,16 +11,13 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"path"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -111,6 +108,13 @@ func recoverMiddleware(prefix string) MiddlewareFunc {
 // downstream connection that used to work has broken, so a load balancer can
 // route around a proxy whose backends are gone.
 func healthHandler(config *Config, readiness func() readinessReport) http.HandlerFunc {
+	return healthHandlerFunc(func() *Config { return config }, readiness)
+}
+
+// healthHandlerFunc is healthHandler over a config that may change. The
+// management API can add and remove servers while the process runs, so the
+// server count has to be read per request rather than captured once.
+func healthHandlerFunc(currentConfig func() *Config, readiness func() readinessReport) http.HandlerFunc {
 	type healthResponse struct {
 		Name        string   `json:"name"`
 		ServerCount int      `json:"serverCount"`
@@ -118,20 +122,21 @@ func healthHandler(config *Config, readiness func() readinessReport) http.Handle
 		Unhealthy   []string `json:"unhealthy,omitempty"`
 		Version     string   `json:"version"`
 	}
-	enabled := 0
-	for _, clientConfig := range config.McpServers {
-		if clientConfig.Options == nil || !clientConfig.Options.Disabled {
-			enabled++
-		}
-	}
-	body := healthResponse{
-		Name:        config.McpProxy.Name,
-		ServerCount: enabled,
-		Status:      "ok",
-		Version:     config.McpProxy.Version,
-	}
 	return func(w http.ResponseWriter, r *http.Request) {
-		code, resp := http.StatusOK, body
+		config := currentConfig()
+		enabled := 0
+		for _, clientConfig := range config.McpServers {
+			if clientConfig.Options == nil || !clientConfig.Options.Disabled {
+				enabled++
+			}
+		}
+		resp := healthResponse{
+			Name:        config.McpProxy.Name,
+			ServerCount: enabled,
+			Status:      "ok",
+			Version:     config.McpProxy.Version,
+		}
+		code := http.StatusOK
 		if readiness != nil {
 			report := readiness()
 			switch {
@@ -222,7 +227,24 @@ func retryWait(ctx context.Context, interval time.Duration) bool {
 	}
 }
 
+// proxyOptions carries what the management API needs and the proxy itself does
+// not. The zero value is exactly the upstream behaviour: no management API, no
+// web UI, and nothing written to the config file.
+type proxyOptions struct {
+	// configPath is the file the management API edits. Empty disables it.
+	configPath string
+	// loadOpts are the flags load() was called with, so a reload parses the
+	// config the same way the initial boot did.
+	loadOpts loadOptions
+	// webUI enables the management API and the embedded dashboard.
+	webUI bool
+}
+
 func startHTTPServer(config *Config) error {
+	return startHTTPServerWithOptions(config, proxyOptions{})
+}
+
+func startHTTPServerWithOptions(config *Config, opts proxyOptions) error {
 	baseURL, uErr := url.Parse(config.McpProxy.BaseURL)
 	if uErr != nil {
 		// baseURL is validated in validateConfig, so this is belt-and-braces;
@@ -239,175 +261,45 @@ func startHTTPServer(config *Config) error {
 		Addr:    config.McpProxy.Addr,
 		Handler: httpMux,
 	}
-	info := mcp.Implementation{
-		Name: config.McpProxy.Name,
-	}
-	// clients is filled in from the per-server goroutines below.
-	var clientsMu sync.Mutex
-	clients := make(map[string]*Client, len(config.McpServers))
-
-	// shuttingDown tells the startup goroutines below that shutdown has already
-	// walked the clients map, so a client that finishes connecting after that
-	// has to close itself instead of being left running.
-	var shuttingDown atomic.Bool
+	runtime := newProxyRuntime(config, baseURL, httpMux)
 
 	// Unauthenticated health endpoints for liveness/readiness probes.
 	var started atomic.Bool
 	readiness := func() readinessReport {
-		if !started.Load() {
-			return readinessReport{}
-		}
-		report := readinessReport{started: true}
-		clientsMu.Lock()
-		defer clientsMu.Unlock()
-		for name, client := range clients {
-			health := client.Health()
-			if health == healthUnknown {
-				// Created but never connected: it has no route, so there is
-				// nothing to route around.
-				continue
-			}
-			report.mounted++
-			if health == healthFailed {
-				report.unhealthy = append(report.unhealthy, name)
-			}
-		}
-		slices.Sort(report.unhealthy)
-		return report
+		return runtime.readiness(started.Load())
 	}
-	httpMux.HandleFunc("GET /_healthz", healthHandler(config, nil))
-	httpMux.HandleFunc("GET /_readyz", healthHandler(config, readiness))
+
+	// currentConfig is what the health endpoints count servers from. Without
+	// the management API it never changes; with it, servers come and go.
+	currentConfig := func() *Config { return config }
+	var manager *Manager
+	if opts.webUI {
+		manager = newManager(ctx, opts.configPath, opts.loadOpts, config, runtime)
+		manager.registerRoutes(httpMux, config.McpProxy.Options.AuthTokens)
+		currentConfig = manager.snapshotConfig
+
+		webUI, wErr := newWebUIHandler("/")
+		if wErr != nil {
+			return fmt.Errorf("web UI: %w", wErr)
+		}
+		// "/" is the least specific pattern ServeMux knows, so the MCP
+		// subtrees and the /api and /_healthz routes all still win. It is
+		// registered only here, which is why a proxy started without -web
+		// keeps 404ing unknown paths exactly as before.
+		httpMux.Handle("/", webUI)
+		slog.Info("Management UI enabled", "route", "/", "config", opts.configPath)
+	}
+
+	httpMux.HandleFunc("GET /_healthz", healthHandlerFunc(currentConfig, nil))
+	httpMux.HandleFunc("GET /_readyz", healthHandlerFunc(currentConfig, readiness))
 
 	for name, clientConfig := range config.McpServers {
 		if clientConfig.Options.Disabled {
 			slog.Info("Disabled", "client", name)
 			continue
 		}
-		// mountRoute publishes a client's endpoint once it has connected. It
-		// runs exactly once per server; a backend that was down at startup and
-		// connects later is mounted then, by the retry below.
-		var mountOnce sync.Once
-		mountRoute := func(mcpClient *Client, server *Server) {
-			mountOnce.Do(func() {
-				// Outermost first: recover also guards the middlewares below it,
-				// and the logger records requests that auth rejects.
-				middlewares := make([]MiddlewareFunc, 0)
-				middlewares = append(middlewares, recoverMiddleware(name))
-				if clientConfig.Options.logEnabled() {
-					middlewares = append(middlewares, loggerMiddleware(name))
-				}
-				if len(clientConfig.Options.AuthTokens) > 0 {
-					middlewares = append(middlewares, newAuthMiddleware(clientConfig.Options.AuthTokens))
-				}
-				mcpRoute := path.Join(baseURL.Path, name)
-				if !strings.HasPrefix(mcpRoute, "/") {
-					mcpRoute = "/" + mcpRoute
-				}
-				if !strings.HasSuffix(mcpRoute, "/") {
-					mcpRoute += "/"
-				}
-				slog.Info("Handling requests", "client", name, "route", mcpRoute)
-				httpMux.Handle(mcpRoute, chainMiddleware(server.handler, middlewares...))
-				httpServer.RegisterOnShutdown(func() {
-					slog.Info("Shutting down", "client", name)
-					if cErr := mcpClient.Close(); cErr != nil {
-						slog.Error("Failed to close client", "client", name, "err", cErr)
-					}
-				})
-			})
-		}
-
 		errorGroup.Go(func() error {
-			slog.Info("Connecting", "client", name)
-			autoReconnect := clientConfig.Options.autoReconnect()
-			interval := clientConfig.Options.reconnectInterval()
-
-			var (
-				mcpClient *Client
-				server    *Server
-			)
-			for {
-				// Creating a stdio client already spawns the subprocess, so a
-				// missing command fails here rather than while connecting. Both
-				// have to obey the same panicIfInvalid policy.
-				if mcpClient == nil {
-					created, err := newMCPClient(name, clientConfig)
-					if err != nil {
-						// Terminal unless it will be retried: log an error for a
-						// failure that ends the attempt, and stay quiet on the
-						// retry path (an unreachable backend is not an error).
-						if fatal := fatalStartupError(clientConfig, err); fatal != nil {
-							slog.Error("Failed to start client", "client", name, "err", redactURLCredentials(err))
-							return fatal
-						}
-						if !autoReconnect {
-							slog.Error("Failed to start client", "client", name, "err", redactURLCredentials(err))
-							return nil
-						}
-						slog.Warn("Retrying client creation", "client", name, "err", redactURLCredentials(err), "retryIn", interval)
-						if !retryWait(ctx, interval) {
-							return nil
-						}
-						continue
-					}
-					mcpClient = created
-					clientsMu.Lock()
-					if shuttingDown.Load() {
-						clientsMu.Unlock()
-						// shutdown already closed everything it knew about, and
-						// this client is not in that map. Nobody else will close
-						// it - and for stdio it owns a subprocess.
-						slog.Info("Shutting down", "client", name)
-						if cErr := mcpClient.Close(); cErr != nil {
-							slog.Error("Failed to close client", "client", name, "err", cErr)
-						}
-						return nil
-					}
-					clients[name] = mcpClient
-					clientsMu.Unlock()
-
-					newServer, sErr := newMCPServer(name, config.McpProxy, clientConfig)
-					if sErr != nil {
-						// A malformed server definition will not fix itself, so
-						// it is never retried.
-						return clientStartupError(name, clientConfig, sErr)
-					}
-					server = newServer
-				}
-
-				err := mcpClient.addToMCPServer(ctx, info, server.mcpServer)
-				if err == nil {
-					slog.Info("Connected", "client", name)
-					mountRoute(mcpClient, server)
-					return nil
-				}
-				if fatal := fatalStartupError(clientConfig, err); fatal != nil {
-					slog.Error("Failed to start client", "client", name, "err", redactURLCredentials(err))
-					return fatal
-				}
-				if mcpClient.closed.Load() {
-					// Shutdown already closed this client; not a startup error.
-					return nil
-				}
-				if !autoReconnect {
-					slog.Error("Failed to start client", "client", name, "err", redactURLCredentials(err))
-					return nil
-				}
-				if permanentStartupError(err) {
-					// Retrying cannot help - interactive OAuth is needed. Report
-					// it once, with the actionable message, and stop rather than
-					// hammering the provider every interval.
-					slog.Error("Not retrying, downstream cannot connect without intervention", "client", name, "err", redactURLCredentials(err))
-					return nil
-				}
-				// The backend is simply not up yet: wait and try again. The
-				// route is mounted only once it connects, so readiness keeps
-				// reporting it as not mounted until then.
-				slog.Warn("Retrying connection", "client", name, "err", redactURLCredentials(err), "retryIn", interval)
-				if !retryWait(ctx, interval) {
-					return nil
-				}
-			}
+			return runtime.supervise(ctx, name, clientConfig)
 		})
 	}
 
@@ -431,7 +323,6 @@ func startHTTPServer(config *Config) error {
 	defer signal.Stop(sigChan)
 
 	shutdown := func() error {
-		shuttingDown.Store(true)
 		cancel()
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
@@ -445,13 +336,8 @@ func startHTTPServer(config *Config) error {
 				shutdownErrors = append(shutdownErrors, err)
 			}
 		}
-		clientsMu.Lock()
-		defer clientsMu.Unlock()
-		for name, client := range clients {
-			slog.Info("Shutting down", "client", name)
-			if err := client.Close(); err != nil {
-				shutdownErrors = append(shutdownErrors, fmt.Errorf("close client %q: %w", name, err))
-			}
+		if err := runtime.closeAll(); err != nil {
+			shutdownErrors = append(shutdownErrors, err)
 		}
 		return errors.Join(shutdownErrors...)
 	}
