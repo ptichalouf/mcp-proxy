@@ -136,6 +136,17 @@ func (m *Manager) registerRoutes(mux *http.ServeMux, authTokens []string) {
 	handle("PATCH /api/mcp/servers/{id}", m.handleUpdate)
 	handle("DELETE /api/mcp/servers/{id}", m.handleDelete)
 	handle("GET /api/mcp/servers/{id}/logs", m.handleLogs)
+
+	// The dashboard is mounted at "/", whose SPA fallback answers every
+	// unmatched path with the HTML shell. That must not extend to /api/: a
+	// client calling a renamed or misspelled endpoint would get a 200 and a
+	// page of HTML where it expected JSON. Registering the subtree claims
+	// those paths first, so an unknown endpoint is an honest JSON 404.
+	handle("/api/", notFoundAPIHandler)
+}
+
+func notFoundAPIHandler(w http.ResponseWriter, r *http.Request) {
+	writeAPIError(w, http.StatusNotFound, "not_found", fmt.Sprintf("no API endpoint %s %s", r.Method, r.URL.Path))
 }
 
 // ---- raw config access ----

@@ -63,8 +63,12 @@ func newWebUIHandler(basePath string) (http.Handler, error) {
 		}
 
 		name := strings.TrimPrefix(path.Clean("/"+strings.TrimPrefix(r.URL.Path, prefix)), "/")
-		if name == "" || name == "." {
-			name = "index.html"
+		// The shell is written directly rather than delegated: FileServerFS
+		// redirects every request for an index.html to "./", which would turn
+		// the mount root of a subtree into a 301 instead of a page.
+		if name == "" || name == "." || name == "index.html" {
+			serveWebIndex(w, r, assets)
+			return
 		}
 
 		info, statErr := fs.Stat(assets, name)
