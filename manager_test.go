@@ -132,7 +132,11 @@ func serverEntry(t *testing.T, path, name string) map[string]any {
 func TestPersistPreservesEnvPlaceholders(t *testing.T) {
 	manager, configPath := newTestManager(t, testConfigJSON)
 
-	if got := manager.config.McpServers["notes"].Env["API_KEY"]; got != "s3cret-value" {
+	notes := manager.config.McpServers["notes"]
+	if notes == nil {
+		t.Fatal("notes server missing from the loaded config")
+	}
+	if got := notes.Env["API_KEY"]; got != "s3cret-value" {
 		t.Fatalf("in-memory config should hold the expanded value, got %q", got)
 	}
 

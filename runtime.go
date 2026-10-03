@@ -373,7 +373,8 @@ func (rt *proxyRuntime) supervise(ctx context.Context, name string, clientConfig
 				}
 				return nil
 			}
-
+		}
+		if server == nil {
 			newServer, sErr := newMCPServer(name, rt.proxyConfig, clientConfig)
 			if sErr != nil {
 				// A malformed server definition will not fix itself, so it is

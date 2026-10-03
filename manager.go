@@ -613,7 +613,9 @@ func (m *Manager) handleInstalled(w http.ResponseWriter, r *http.Request) {
 
 	servers := make([]installedServer, 0, len(names))
 	for _, name := range names {
-		servers = append(servers, m.serverView(name, m.config.McpServers[name], rawServerEnv(rc, name)))
+		if conf := m.config.McpServers[name]; conf != nil {
+			servers = append(servers, m.serverView(name, conf, rawServerEnv(rc, name)))
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"servers": servers})
 }
@@ -769,6 +771,10 @@ func (m *Manager) handleInstall(w http.ResponseWriter, r *http.Request) {
 	}
 
 	conf := m.config.McpServers[name]
+	if conf == nil {
+		writeAPIError(w, http.StatusInternalServerError, "missing_after_reload", "server disappeared after reload")
+		return
+	}
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"server": m.serverView(name, conf, rawServerEnv(rc, name)),
 		"reload": result,
