@@ -123,6 +123,11 @@ func healthHandlerFunc(currentConfig func() *Config, readiness func() readinessR
 		Version     string   `json:"version"`
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
 		config := currentConfig()
 		enabled := 0
 		for _, clientConfig := range config.McpServers {
@@ -150,8 +155,6 @@ func healthHandlerFunc(currentConfig func() *Config, readiness func() readinessR
 				code, resp.Status = http.StatusServiceUnavailable, "unavailable"
 			}
 		}
-		// Registered under a "GET" pattern, so ServeMux answers 405 (with Allow)
-		// for every other method before this runs. GET patterns match HEAD too.
 		switch r.Method {
 		case http.MethodGet:
 			w.Header().Set("Content-Type", "application/json")
@@ -272,26 +275,34 @@ func startHTTPServerWithOptions(config *Config, opts proxyOptions) error {
 	// currentConfig is what the health endpoints count servers from. Without
 	// the management API it never changes; with it, servers come and go.
 	currentConfig := func() *Config { return config }
-	var manager *Manager
+	var (
+		manager *Manager
+		webUI   http.Handler
+	)
 	if opts.webUI {
 		manager = newManager(ctx, opts.configPath, opts.loadOpts, config, runtime)
 		manager.registerRoutes(httpMux, config.McpProxy.Options.AuthTokens)
 		currentConfig = manager.snapshotConfig
 
-		webUI, wErr := newWebUIHandler("/")
+		handler, wErr := newWebUIHandler("/")
 		if wErr != nil {
 			return fmt.Errorf("web UI: %w", wErr)
 		}
-		// "/" is the least specific pattern ServeMux knows, so the MCP
-		// subtrees and the /api and /_healthz routes all still win. It is
-		// registered only here, which is why a proxy started without -web
-		// keeps 404ing unknown paths exactly as before.
-		httpMux.Handle("/", webUI)
+		webUI = handler
 		slog.Info("Management UI enabled", "route", "/", "config", opts.configPath)
 	}
+	// "/" is the least specific pattern ServeMux knows, so the MCP subtrees
+	// and the /api and /_healthz routes all still win. The fallback claims the
+	// MCP-shaped paths of servers that are not connected (502) or not
+	// configured (404), and hands every other path to the dashboard - or, without
+	// -web, to the same plain 404 as before.
+	newUpstreamFallback(baseURL.Path, currentConfig).install(httpMux, runtime.router, webUI)
 
-	httpMux.HandleFunc("GET /_healthz", healthHandlerFunc(currentConfig, nil))
-	httpMux.HandleFunc("GET /_readyz", healthHandlerFunc(currentConfig, readiness))
+	// Method-less patterns: with "/" claiming every method, a "GET /_healthz"
+	// pattern would send a POST to the catch-all instead of answering 405, so
+	// the handler rejects other methods itself.
+	httpMux.HandleFunc("/_healthz", healthHandlerFunc(currentConfig, nil))
+	httpMux.HandleFunc("/_readyz", healthHandlerFunc(currentConfig, readiness))
 
 	for name, clientConfig := range config.McpServers {
 		if clientConfig.Options.Disabled {

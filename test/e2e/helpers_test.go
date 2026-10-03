@@ -302,6 +302,32 @@ func (p *proxy) get(t *testing.T, path string) int {
 	return resp.StatusCode
 }
 
+// post sends a JSON-RPC ping to path, with a bearer token when token is not
+// empty, and returns the status and body. An unmounted route's answer is the
+// point of these calls, so the body is returned rather than parsed.
+func (p *proxy) post(t *testing.T, path, token string) (int, string) {
+	t.Helper()
+
+	req, err := http.NewRequest(http.MethodPost, p.baseURL+path, strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST %s: %v", path, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read POST %s: %v", path, err)
+	}
+	return resp.StatusCode, string(body)
+}
+
 // stop sends SIGTERM and asserts the proxy exits cleanly, which is how it is
 // shut down in production.
 func (p *proxy) stop(t *testing.T) {

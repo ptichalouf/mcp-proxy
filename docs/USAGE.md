@@ -60,8 +60,8 @@ Two unauthenticated endpoints are always served for liveness/readiness probes
   which removed ping) are probed with a real `tools/list` request; legacy
   connections are still pinged.
 - `/_readyz` returns `503` with `"status":"unavailable"` if no enabled server is
-  mounted at all. Nothing can be named as broken in that case, but every MCP
-  route would `404`.
+  mounted at all. Nothing can be named as broken in that case, but no MCP route
+  can serve.
 - `GET` returns a JSON status document; `HEAD` returns the same code with an
   empty body. `serverCount` counts enabled servers only.
 
@@ -72,6 +72,26 @@ curl http://127.0.0.1:9090/_healthz
 curl http://127.0.0.1:9090/_readyz
 # {"name":"MCP Proxy","serverCount":3,"status":"degraded","unhealthy":["notion"],"version":"1.0.0"}
 ```
+
+### Routes of servers that are not connected
+
+A server's route (`/<name>/mcp`, `/<name>/sse`, `/<name>/message`) is published
+only once its backend connects. Until then, and whenever it is stopped, the
+route answers JSON instead of falling through to the dashboard (which used to
+give a `405` to `POST` and the dashboard HTML to `GET`):
+
+| Situation | Status | Body |
+| --- | --- | --- |
+| Configured, not connected (down, retrying, failed) | `502` | `{"error":"upstream <name> unreachable"}` |
+| Configured but `disabled` | `503` | `{"error":"server <name> disabled"}` |
+| Not configured | `404` | `{"error":"unknown server <name>"}` |
+
+The server's `authTokens` are checked first, exactly as on the connected route,
+so a caller without a valid token gets `401`, not the state of the backend. The
+route serves again as soon as the backend reconnects, without a restart. Each
+`502` logs a `WARN` `upstream unreachable` with `server=<name>`, at most once per
+server and minute. Every other path keeps its previous answer (the dashboard
+with `-web`, a plain `404` without).
 
 A server that never connected at startup is *not* reported as unhealthy: it has
 no route, and keeping the whole proxy out of rotation would take the working

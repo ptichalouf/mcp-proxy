@@ -218,8 +218,8 @@ func TestSlowRemoteServerDoesNotBlockReadiness(t *testing.T) {
 
 	// The slow server has no route yet, and is not reported unhealthy: it has
 	// never connected, so there is nothing to route around.
-	if got := proxy.get(t, "/slow/mcp"); got != http.StatusNotFound {
-		t.Errorf("slow server route = %d, want 404 while it is still connecting", got)
+	if code, body := proxy.post(t, "/slow/mcp", ""); code != http.StatusBadGateway || !strings.Contains(body, `"upstream slow unreachable"`) {
+		t.Errorf("slow server route = %d %s, want 502 while it is still connecting", code, body)
 	}
 	if _, body := proxy.ready(t); strings.Contains(body, "unhealthy") {
 		t.Errorf("/_readyz body = %s, want no unhealthy list for a server that never connected", body)
@@ -345,10 +345,11 @@ func TestAutoReconnectMountsBackendThatStartsLater(t *testing.T) {
 	proxy := launchProxy(t, configPath, addr)
 
 	// Nothing has connected, so the proxy reports that it has no routes and the
-	// endpoint 404s - the state the retry exists to escape.
+	// endpoint answers 502 naming the backend - the state the retry exists to
+	// escape.
 	proxy.waitForReadyBody(t, http.StatusServiceUnavailable, `"status":"unavailable"`)
-	if got := proxy.get(t, "/remote/mcp"); got != http.StatusNotFound {
-		t.Errorf("route before the backend exists = %d, want 404", got)
+	if code, body := proxy.post(t, "/remote/mcp", ""); code != http.StatusBadGateway || !strings.Contains(body, `"upstream remote unreachable"`) {
+		t.Errorf("route before the backend exists = %d %s, want 502", code, body)
 	}
 
 	// Bring the backend up on the address the proxy is already retrying.

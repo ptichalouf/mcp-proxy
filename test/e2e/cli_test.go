@@ -140,8 +140,9 @@ func TestBrokenServerDoesNotStopTheProxy(t *testing.T) {
 	// startProxy waits for readiness, so reaching this line is the assertion.
 	proxy := startProxy(t, configPath, addr)
 
-	if got := proxy.get(t, "/broken/mcp"); got != http.StatusNotFound {
-		t.Errorf("broken server route = %d, want 404 (it must never be mounted)", got)
+	// Never mounted: the route names the dead backend instead of 404ing.
+	if code, body := proxy.post(t, "/broken/mcp", ""); code != http.StatusBadGateway || !strings.Contains(body, `"upstream broken unreachable"`) {
+		t.Errorf("broken server route = %d %s, want 502 upstream broken unreachable (it must never be mounted)", code, body)
 	}
 	mcpClient := proxy.connect(t, "streamable-http", "fixture")
 	if got := callToolText(t, mcpClient, "echo", map[string]any{"message": "still up"}); got != "still up" {

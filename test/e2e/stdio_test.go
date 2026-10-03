@@ -32,8 +32,16 @@ func TestStdioServerOverHTTP(t *testing.T) {
 
 			checkHealthEndpoints(t, proxy)
 			checkAuth(t, proxy, serverType)
-			if got := proxy.get(t, "/off/mcp"); got != http.StatusNotFound {
-				t.Errorf("disabled server route = %d, want 404 (it must not be mounted)", got)
+			// Not mounted: the server's auth still runs first, then the route
+			// says it is disabled rather than 404ing.
+			if code, _ := proxy.post(t, "/off/mcp", ""); code != http.StatusUnauthorized {
+				t.Errorf("disabled server route without token = %d, want 401", code)
+			}
+			if code, body := proxy.post(t, "/off/mcp", testAuthToken); code != http.StatusServiceUnavailable || !strings.Contains(body, `"server off disabled"`) {
+				t.Errorf("disabled server route = %d %s, want 503 server off disabled (it must not be mounted)", code, body)
+			}
+			if code, body := proxy.post(t, "/does-not-exist/mcp", testAuthToken); code != http.StatusNotFound || !strings.Contains(body, `"unknown server does-not-exist"`) {
+				t.Errorf("unknown server route = %d %s, want a JSON 404", code, body)
 			}
 
 			mcpClient := proxy.connect(t, serverType, "fixture")

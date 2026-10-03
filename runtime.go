@@ -33,6 +33,9 @@ type dynamicRouter struct {
 	mu         sync.RWMutex
 	handlers   map[string]http.Handler
 	registered map[string]bool
+	// fallback serves a registered route while nothing is mounted on it;
+	// nil means a plain 404.
+	fallback http.Handler
 }
 
 func newDynamicRouter(mux *http.ServeMux) *dynamicRouter {
@@ -57,15 +60,26 @@ func (r *dynamicRouter) mount(route string, handler http.Handler) {
 		// remount never panics.
 		r.mux.Handle(route, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			r.mu.RLock()
-			current := r.handlers[route]
+			current, fallback := r.handlers[route], r.fallback
 			r.mu.RUnlock()
 			if current == nil {
+				if fallback != nil {
+					fallback.ServeHTTP(w, req)
+					return
+				}
 				http.NotFound(w, req)
 				return
 			}
 			current.ServeHTTP(w, req)
 		}))
 	}
+}
+
+// setFallback sets what an unmounted route answers instead of a plain 404.
+func (r *dynamicRouter) setFallback(h http.Handler) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fallback = h
 }
 
 // unmount makes route stop serving. The pattern stays claimed on the mux.
