@@ -4,10 +4,28 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
+	"strings"
 )
 
 var BuildVersion = "dev"
+
+// The management API can execute processes under the proxy's UID. A remote
+// listener without tokens must not be allowed, even if -web was intentional.
+func validateWebManagementAccess(web bool, addr string, tokens []string) error {
+	if !web || len(tokens) > 0 {
+		return nil
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("-web without authTokens requires a loopback addr: %w", err)
+	}
+	if strings.EqualFold(host, "localhost") || (net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()) {
+		return nil
+	}
+	return fmt.Errorf("-web without authTokens requires a loopback addr, got %q; configure mcpProxy.options.authTokens", addr)
+}
 
 func main() {
 	conf := flag.String("config", "config.json", "path to config file or a http(s) url")
@@ -66,11 +84,9 @@ func main() {
 		slog.Error("-web needs a local config file: a config served over http(s) cannot be written back to", "config", *conf)
 		os.Exit(1)
 	}
-	if *web && len(config.McpProxy.Options.AuthTokens) == 0 {
-		// Not fatal - a proxy bound to localhost for one developer is a
-		// legitimate setup - but this endpoint can start processes, so nobody
-		// should reach it by accident.
-		slog.Warn("Management UI is enabled without authTokens: anyone who can reach this address can add servers and run commands as this process", "addr", config.McpProxy.Addr)
+	if err := validateWebManagementAccess(*web, config.McpProxy.Addr, config.McpProxy.Options.AuthTokens); err != nil {
+		slog.Error("Management UI access denied", "err", err)
+		os.Exit(1)
 	}
 	err = startHTTPServerWithOptions(config, proxyOptions{
 		configPath: *conf,

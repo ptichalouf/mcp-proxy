@@ -1,5 +1,6 @@
 import { useI18n } from '../i18n';
 import type { CatalogItem } from '../types';
+import { catalogEnvRequirements } from '../lib/catalogEnv';
 import {
   X,
   Plus,
@@ -31,6 +32,7 @@ export function ServerDetailModal({
 
   const description =
     locale === 'fr' && item.descriptionFr ? item.descriptionFr : item.description;
+  const requirements = catalogEnvRequirements(item);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-md animate-fade-in">
@@ -51,7 +53,7 @@ export function ServerDetailModal({
                   </span>
                 )}
               </div>
-              <p className="text-xs text-slate-400 mt-0.5">by {item.author}</p>
+              <p className="text-xs text-slate-400 mt-0.5">by {item.vendor || item.author || 'Community'}</p>
             </div>
           </div>
           <button
@@ -117,14 +119,14 @@ export function ServerDetailModal({
           )}
 
           {/* Environment Variables Requirements */}
-          {item.envRequirements && item.envRequirements.length > 0 && (
+          {requirements.length > 0 && (
             <div>
               <h4 className="text-xs font-bold text-slate-100 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
                 <Key className="w-3.5 h-3.5 text-cyan-400" />
                 {t('serverDetailModal.envRequirements')}
               </h4>
               <div className="space-y-2">
-                {item.envRequirements.map((env) => (
+                {requirements.map((env) => (
                   <div
                     key={env.key}
                     className="p-3 bg-slate-950/60 border border-slate-800/80 rounded-xl flex items-start justify-between gap-3"
@@ -137,7 +139,7 @@ export function ServerDetailModal({
                             Required
                           </span>
                         )}
-                        {env.secret && (
+                        {env.isSecret && (
                           <span className="text-[10px] font-sans px-1.5 py-0.2 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
                             Secret
                           </span>
@@ -168,9 +170,9 @@ export function ServerDetailModal({
 
         {/* Footer */}
         <div className="flex items-center justify-between px-6 py-4 border-t border-slate-800 bg-slate-950/60">
-          {item.repositoryUrl ? (
+          {(item.sourceUrl || item.repositoryUrl) ? (
             <a
-              href={item.repositoryUrl}
+              href={item.sourceUrl || item.repositoryUrl}
               target="_blank"
               rel="noopener noreferrer"
               className="text-xs text-slate-400 hover:text-slate-200 flex items-center gap-1.5 underline decoration-slate-700 hover:decoration-slate-400"

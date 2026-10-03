@@ -148,8 +148,10 @@ tokens. The page itself is served without one — it has to be, so it can ask �
 and it then prompts for a token, verifies it against a real endpoint, and stores
 it in this browser's `localStorage`. Until a valid token is supplied the
 dashboard shows nothing but the prompt, and a sign-out button in the header
-forgets it. Without `authTokens` the proxy starts anyway (a localhost-only setup
-is legitimate) and logs a warning. `-web` also refuses to start when the config
+forgets it. Without `authTokens`, `-web` starts **only** if `mcpProxy.addr`
+is explicitly bound to loopback (`127.0.0.1`, `::1`, or `localhost`). An
+unauthenticated wildcard/LAN listener is rejected; configure tokens before
+binding the dashboard remotely. `-web` also refuses to start when the config
 is a remote `http(s)` URL, since there is nothing to write back to.
 
 A change is applied by reloading the config and starting or stopping only the
@@ -159,10 +161,12 @@ would not load is rejected and the file is left as it was), the previous file is
 backed up to `<config dir>/.backups/` keeping the 10 most recent, and the write
 is atomic.
 
-Environment values are handled carefully. A `${VAR}` placeholder is preserved in
-the file rather than replaced by its expanded value, and a secret written
-literally is sent back to the browser masked, then restored on save — so the
-dashboard never round-trips a real credential into `config.json`.
+`${VAR}` placeholders are preserved in the file rather than replaced by
+expanded values; configure secrets in the proxy process environment and put
+placeholders in the dashboard. **A literal secret entered in the install form
+is saved in plaintext in `config.json`**, so do not paste production credentials
+there. The dashboard masks configured secret fields in responses, but that is
+not encryption at rest and arguments/URLs should never contain credentials.
 
 The `mcp-proxy -web` process serves the compiled UI from the binary itself;
 there is no separate frontend to deploy.

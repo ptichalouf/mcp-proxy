@@ -2,10 +2,82 @@ package main
 
 import (
 	"net/http"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
 )
+
+// These recipes are intentionally pinned and contain no credentials in args.
+// The commands are documentation-checked, not runtime-verified.
+func TestCuratedCatalogRecipes(t *testing.T) {
+	tests := []struct {
+		id, vendor, category, source, command, url string
+		args                                       []string
+		required, secrets                          []string
+	}{
+		{"grafana", "Grafana Labs", "monitoring", "https://github.com/grafana/mcp-grafana", "uvx", "", []string{"mcp-grafana==1.6.3", "--disable-write"}, []string{"GRAFANA_URL", "GRAFANA_SERVICE_ACCOUNT_TOKEN"}, []string{"GRAFANA_SERVICE_ACCOUNT_TOKEN"}},
+		{"clickhouse", "ClickHouse", "database", "https://github.com/ClickHouse/mcp-clickhouse", "uv", "", []string{"run", "--with", "mcp-clickhouse==0.7.0", "--python", "3.12", "mcp-clickhouse"}, []string{"CLICKHOUSE_HOST", "CLICKHOUSE_USER", "CLICKHOUSE_PASSWORD"}, []string{"CLICKHOUSE_PASSWORD"}},
+		{"mysql", "Ben Borla", "database", "https://github.com/benborla/mcp-server-mysql", "npx", "", []string{"-y", "@benborla29/mcp-server-mysql@2.0.9"}, []string{"MYSQL_HOST", "MYSQL_USER", "MYSQL_PASS", "MYSQL_DB"}, []string{"MYSQL_PASS"}},
+		{"aws-documentation", "AWS", "development", "https://github.com/awslabs/mcp/tree/main/src/aws-documentation-mcp-server", "uvx", "", []string{"awslabs.aws-documentation-mcp-server==1.2.2"}, nil, nil},
+		{"microsoft-learn", "Microsoft", "development", "https://github.com/MicrosoftDocs/mcp", "", "https://learn.microsoft.com/api/mcp", nil, nil, nil},
+		{"cloudflare-documentation", "Cloudflare", "development", "https://github.com/cloudflare/mcp-server-cloudflare/tree/main/apps/docs-ai-search", "", "https://docs.mcp.cloudflare.com/mcp", nil, nil, nil},
+		{"portainer", "Portainer", "monitoring", "https://github.com/portainer/portainer-mcp", "uvx", "", []string{"--from", "mcp-portainer==2.45.1", "mcp-portainer"}, []string{"PORTAINER_URL", "PORTAINER_API_KEY"}, []string{"PORTAINER_API_KEY"}},
+		{"redis", "Redis", "database", "https://github.com/redis/mcp-redis", "uvx", "", []string{"--from", "redis-mcp-server==0.5.1", "redis-mcp-server"}, []string{"REDIS_HOST"}, []string{"REDIS_PWD"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.id, func(t *testing.T) {
+			item, ok := catalogByID(tt.id)
+			if !ok {
+				t.Fatalf("catalog entry %s missing", tt.id)
+			}
+			if item.Vendor != tt.vendor || item.Category != tt.category || item.SourceURL != tt.source {
+				t.Errorf("metadata: vendor=%q category=%q source=%q", item.Vendor, item.Category, item.SourceURL)
+			}
+			if item.Description == "" || item.DescriptionFr == "" || item.Verified {
+				t.Errorf("bilingual description missing or untested entry marked verified: %+v", item)
+			}
+			if item.DefaultConfig.Command != tt.command || item.DefaultConfig.URL != tt.url || !reflect.DeepEqual(item.DefaultConfig.Args, tt.args) {
+				t.Errorf("recipe: %+v", item.DefaultConfig)
+			}
+			for _, name := range tt.required {
+				found := false
+				for _, env := range item.Env {
+					if env.Name == name && env.Required {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("required env %s missing", name)
+				}
+			}
+			for _, name := range tt.secrets {
+				found := false
+				for _, env := range item.Env {
+					if env.Name == name && env.Secret {
+						found = true
+					}
+				}
+				if !found {
+					t.Errorf("secret env %s missing", name)
+				}
+			}
+			for _, env := range item.Env {
+				if _, ok := item.DefaultConfig.Env[env.Name]; !ok {
+					t.Errorf("env %s absent from default config", env.Name)
+				}
+				if env.Secret && item.DefaultConfig.Env[env.Name] != "" {
+					t.Errorf("secret %s has nonempty default", env.Name)
+				}
+			}
+			for _, arg := range item.DefaultConfig.Args {
+				if strings.Contains(strings.ToLower(arg), "password") || strings.Contains(strings.ToLower(arg), "token") || strings.Contains(arg, "${") || strings.Contains(arg, "@latest") {
+					t.Errorf("unsafe or mutable arg %q", arg)
+				}
+			}
+		})
+	}
+}
 
 // The catalog is hand-maintained data, and a malformed entry is a broken
 // install button rather than a compile error - so the invariants the install

@@ -1,6 +1,7 @@
 import { useState, useEffect, type FormEvent } from 'react';
 import { useI18n } from '../i18n';
 import type { CatalogItem, MCPTransportType } from '../types';
+import { catalogEnvRequirements, missingRequiredEnv, type CatalogEnvField } from '../lib/catalogEnv';
 import {
   X,
   Plus,
@@ -40,7 +41,7 @@ export function InstallModal({
   const [command, setCommand] = useState('');
   const [argsText, setArgsText] = useState('');
   const [url, setUrl] = useState('');
-  const [envVars, setEnvVars] = useState<Array<{ key: string; value: string; isSecret?: boolean }>>([]);
+  const [envVars, setEnvVars] = useState<CatalogEnvField[]>([]);
   const [showSecrets, setShowSecrets] = useState<Record<number, boolean>>({});
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -55,29 +56,8 @@ export function InstallModal({
       setArgsText(catalogItem.defaultConfig?.args?.join(' ') || '');
       setUrl(catalogItem.defaultConfig?.url || '');
 
-      // Initialize env vars from catalog requirements
-      const initialEnv: Array<{ key: string; value: string; isSecret?: boolean }> = [];
-      if (catalogItem.envRequirements) {
-        for (const req of catalogItem.envRequirements) {
-          const kName = req.key || req.name || '';
-          if (kName) {
-            initialEnv.push({
-              key: kName,
-              value: req.default || '',
-              isSecret: req.secret || req.isSecret || kName.toLowerCase().includes('key') || kName.toLowerCase().includes('token') || kName.toLowerCase().includes('secret'),
-            });
-          }
-        }
-      } else if (catalogItem.defaultConfig?.env) {
-        for (const [k, v] of Object.entries(catalogItem.defaultConfig.env)) {
-          initialEnv.push({
-            key: k,
-            value: v,
-            isSecret: k.toLowerCase().includes('key') || k.toLowerCase().includes('token') || k.toLowerCase().includes('secret'),
-          });
-        }
-      }
-      setEnvVars(initialEnv);
+      // Use the Go API's `env` metadata (description, required and isSecret).
+      setEnvVars(catalogEnvRequirements(catalogItem));
     } else {
       // Custom server default
       setName('');
@@ -94,7 +74,7 @@ export function InstallModal({
   if (!isOpen) return null;
 
   const handleAddEnv = () => {
-    setEnvVars((prev) => [...prev, { key: '', value: '' }]);
+    setEnvVars((prev) => [...prev, { key: '', value: '', description: '', required: false, isSecret: false }]);
   };
 
   const handleRemoveEnv = (index: number) => {
@@ -139,6 +119,13 @@ export function InstallModal({
         }
       }
 
+      const missing = missingRequiredEnv(catalogEnvRequirements(catalogItem), envMap);
+      if (missing.length) {
+        setError(locale === 'fr'
+          ? `Variable requise : ${missing.join(', ')}`
+          : `Required variable: ${missing.join(', ')}`);
+        return;
+      }
       const parsedArgs = argsText
         .trim()
         .split(/\s+/)
@@ -183,7 +170,7 @@ export function InstallModal({
                   : t('common.addCustomServer')}
               </h2>
               <p className="text-xs text-slate-400">
-                {catalogItem ? `by ${catalogItem.author}` : 'Configure standard I/O or remote endpoint'}
+                {catalogItem ? `by ${catalogItem.vendor || catalogItem.author || 'Community'}` : 'Configure standard I/O or remote endpoint'}
               </p>
             </div>
           </div>
@@ -303,7 +290,7 @@ export function InstallModal({
               <label className="text-xs font-semibold text-slate-200 flex items-center gap-1.5">
                 <span>{t('installModal.envVars')}</span>
                 <span className="text-[10px] text-slate-400 font-normal">
-                  (Supports {'${VAR}'} proxy env expansion)
+                  ({'${VAR}'} from proxy environment; literal secrets are saved in plaintext)
                 </span>
               </label>
               <button
@@ -322,7 +309,8 @@ export function InstallModal({
                 const isVisible = showSecrets[index];
 
                 return (
-                  <div key={index} className="flex items-center gap-2">
+                  <div key={index} className="space-y-1">
+                  <div className="flex items-center gap-2">
                     <input
                       type="text"
                       value={envItem.key}
@@ -355,6 +343,12 @@ export function InstallModal({
                     >
                       <Trash2 className="w-3.5 h-3.5" />
                     </button>
+                  </div>
+                  {(envItem.description || envItem.required) && (
+                    <p className="text-[10px] text-slate-400 px-1">
+                      {envItem.description}{envItem.required && <span className="text-rose-400"> *</span>}
+                    </p>
+                  )}
                   </div>
                 );
               })}
