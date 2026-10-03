@@ -95,8 +95,9 @@ type proxyRuntime struct {
 
 	mu      sync.Mutex
 	clients map[string]*Client
-	// cancels ends the supervisor goroutine of a server started after
-	// startup, so stopping one does not wait for the whole proxy to shut down.
+	// cancels ends the supervisor goroutine of each server (boot-time or
+	// started later), so stopping one does not wait for the whole proxy to
+	// shut down.
 	cancels map[string]context.CancelFunc
 
 	// shuttingDown tells the supervisor goroutines that shutdown has already
@@ -131,12 +132,14 @@ func (rt *proxyRuntime) route(name string) string {
 }
 
 // adopt records a freshly created client. It reports false when shutdown has
-// already run, in which case the caller owns closing the client - for stdio it
-// holds a subprocess nobody else knows about.
-func (rt *proxyRuntime) adopt(name string, client *Client) bool {
+// already run, or when this supervisor was stopped (ctx ended) while the client
+// was being created, in which case the caller owns closing the client - for
+// stdio it holds a subprocess nobody else knows about. stop cancels ctx under
+// rt.mu, so the check and the insert cannot straddle a stop.
+func (rt *proxyRuntime) adopt(ctx context.Context, name string, client *Client) bool {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
-	if rt.shuttingDown.Load() {
+	if rt.shuttingDown.Load() || ctx.Err() != nil {
 		return false
 	}
 	rt.clients[name] = client
@@ -167,8 +170,19 @@ func (rt *proxyRuntime) lookup(name string) *Client {
 	return rt.clients[name]
 }
 
-// track stores the cancel func of a supervisor goroutine started after
-// startup.
+// serverContext derives the context one server's supervisor runs under and
+// registers its cancel, so stop(name) ends that supervisor - and through it
+// the client's keepalive loop - whether the server was started at boot or
+// after it. Boot-time servers used to run directly under the proxy's context,
+// so a reload that stopped one left its supervisor and keepalive loop running
+// for the lifetime of the process.
+func (rt *proxyRuntime) serverContext(ctx context.Context, name string) context.Context {
+	serverCtx, cancel := context.WithCancel(ctx)
+	rt.track(name, cancel)
+	return serverCtx
+}
+
+// track stores the cancel func of a server's supervisor goroutine.
 func (rt *proxyRuntime) track(name string, cancel context.CancelFunc) {
 	rt.mu.Lock()
 	defer rt.mu.Unlock()
@@ -182,18 +196,22 @@ func (rt *proxyRuntime) track(name string, cancel context.CancelFunc) {
 // supervisor goroutine ends, and its client (and stdio subprocess) is closed.
 // Every other server keeps its connection.
 func (rt *proxyRuntime) stop(name string) error {
-	rt.router.unmount(rt.route(name))
-
 	rt.mu.Lock()
 	client := rt.clients[name]
 	delete(rt.clients, name)
 	cancel := rt.cancels[name]
 	delete(rt.cancels, name)
-	rt.mu.Unlock()
-
+	// Cancel under the lock: adopt and mountIfCurrent check the supervisor's
+	// context under the same lock, so a supervisor that is mid-connect cannot
+	// re-register or re-mount the server after this returns.
 	if cancel != nil {
 		cancel()
 	}
+	rt.mu.Unlock()
+
+	// Unmount after the supervisor is cancelled, so it cannot mount again in
+	// between.
+	rt.router.unmount(rt.route(name))
 	if client == nil {
 		return nil
 	}
@@ -254,6 +272,20 @@ func (rt *proxyRuntime) readiness(started bool) readinessReport {
 	return report
 }
 
+// mountIfCurrent mounts the server only if its supervisor is still the live
+// one: a supervisor stopped (by a reload or a delete) while it was connecting
+// must not publish a route for a client that has already been closed, nor
+// overwrite the route of its replacement.
+func (rt *proxyRuntime) mountIfCurrent(ctx context.Context, name string, client *Client, clientConfig *MCPClientConfigV2, server *Server) bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if ctx.Err() != nil || rt.clients[name] != client {
+		return false
+	}
+	rt.mount(name, clientConfig, server)
+	return true
+}
+
 // mount publishes a connected server's endpoint, wrapped in the middlewares
 // its config asks for.
 func (rt *proxyRuntime) mount(name string, clientConfig *MCPClientConfigV2, server *Server) {
@@ -284,10 +316,6 @@ func (rt *proxyRuntime) supervise(ctx context.Context, name string, clientConfig
 	recordServerLog(name, logStreamSystem, "info", "Connecting to downstream server")
 	autoReconnect := clientConfig.Options.autoReconnect()
 	interval := clientConfig.Options.reconnectInterval()
-
-	// mountOnce runs exactly once per server; a backend that was down at
-	// startup and connects later is mounted then, by the retry below.
-	var mountOnce sync.Once
 
 	var (
 		mcpClient *Client
@@ -321,7 +349,7 @@ func (rt *proxyRuntime) supervise(ctx context.Context, name string, clientConfig
 				continue
 			}
 			mcpClient = created
-			if !rt.adopt(name, mcpClient) {
+			if !rt.adopt(ctx, name, mcpClient) {
 				// Shutdown already closed everything it knew about, and this
 				// client is not in that map. Nobody else will close it - and
 				// for stdio it owns a subprocess.
@@ -344,9 +372,15 @@ func (rt *proxyRuntime) supervise(ctx context.Context, name string, clientConfig
 
 		err := mcpClient.addToMCPServer(ctx, rt.info, server.mcpServer)
 		if err == nil {
+			if !rt.mountIfCurrent(ctx, name, mcpClient, clientConfig, server) {
+				// Stopped while connecting. stop() may have run before this
+				// client was in the map it walks, so close it here too
+				// (Close is idempotent).
+				_ = mcpClient.Close()
+				return nil
+			}
 			slog.Info("Connected", "client", name)
 			recordServerLog(name, logStreamSystem, "info", "Connected")
-			mountOnce.Do(func() { rt.mount(name, clientConfig, server) })
 			return nil
 		}
 		if fatal := fatalStartupError(clientConfig, err); fatal != nil {
@@ -354,8 +388,9 @@ func (rt *proxyRuntime) supervise(ctx context.Context, name string, clientConfig
 			recordServerLog(name, logStreamSystem, "error", redactURLCredentials(err).Error())
 			return fatal
 		}
-		if mcpClient.closed.Load() {
-			// Shutdown already closed this client; not a startup error.
+		if mcpClient.closed.Load() || ctx.Err() != nil {
+			// Shutdown or stop() already closed this client; not a startup
+			// error.
 			return nil
 		}
 		if !autoReconnect {
@@ -386,8 +421,7 @@ func (rt *proxyRuntime) supervise(ctx context.Context, name string, clientConfig
 // been reconfigured. It returns immediately; the supervisor runs until ctx
 // ends or stop is called for this name.
 func (rt *proxyRuntime) start(ctx context.Context, name string, clientConfig *MCPClientConfigV2) {
-	serverCtx, cancel := context.WithCancel(ctx)
-	rt.track(name, cancel)
+	serverCtx := rt.serverContext(ctx, name)
 	go func() {
 		if err := rt.supervise(serverCtx, name, clientConfig); err != nil {
 			// panicIfInvalid is a startup-time contract: after boot, refusing

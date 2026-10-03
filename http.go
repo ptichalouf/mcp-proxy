@@ -298,8 +298,9 @@ func startHTTPServerWithOptions(config *Config, opts proxyOptions) error {
 			slog.Info("Disabled", "client", name)
 			continue
 		}
+		serverCtx := runtime.serverContext(ctx, name)
 		errorGroup.Go(func() error {
-			return runtime.supervise(ctx, name, clientConfig)
+			return runtime.supervise(serverCtx, name, clientConfig)
 		})
 	}
 
